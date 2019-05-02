@@ -3,10 +3,13 @@ import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn import functional as F
 from cnn_model import Net
+import torch.optim as optim
+import numpy as np
+from torch.utils.data import TensorDataset, DataLoader
 
 class LSTM(nn.Module):
     def __init__(self, nb_layers, nb_lstm_units=100, embedding_dim=1024, batch_size=3):
-
+        super(LSTM, self).__init__()
         self.tags = {'forward':0, 'left':1, 'right':2}
 
         self.nb_lstm_layers = nb_layers
@@ -17,23 +20,9 @@ class LSTM(nn.Module):
         # don't count the padding tag for the classifier output
         self.nb_tags = len(self.tags)
 
-        # when the model is bidirectional we double the output dimension
-        self.lstm
+        # # when the model is bidirectional we double the output dimension
+        # self.lstm
 
-        # build actual NN
-        self.__build_model()
-
-    def __build_model(self):
-        # build embedding layer first
-        # nb_vocab_words = len(self.vocab)
-        #
-        # # # whenever the embedding sees the padding index it'll make the whole vector zeros
-        # padding_idx = self.vocab['<PAD>']
-        # self.word_embedding = nn.Embedding(
-        #     num_embeddings=nb_vocab_words,
-        #     embedding_dim=self.embedding_dim,
-        #     padding_idx=padding_idx
-        # )
         self.embedding = Net(self.embedding_dim)
         # design LSTM
         self.lstm = nn.LSTM(
@@ -46,12 +35,13 @@ class LSTM(nn.Module):
         # output layer which projects back to tag space
         self.hidden_to_tag = nn.Linear(self.nb_lstm_units, self.nb_tags)
 
+
     def init_hidden(self):
         # the weights are of the form (nb_layers, batch_size, nb_lstm_units)
-        hidden_a = torch.randn(self.hparams.nb_lstm_layers, self.batch_size, self.nb_lstm_units)
-        hidden_b = torch.randn(self.hparams.nb_lstm_layers, self.batch_size, self.nb_lstm_units)
+        hidden_a = torch.randn(self.nb_lstm_layers, self.batch_size, self.nb_lstm_units)
+        hidden_b = torch.randn(self.nb_lstm_layers, self.batch_size, self.nb_lstm_units)
 
-        if self.hparams.on_gpu:
+        if torch.cuda.is_available():
             hidden_a = hidden_a.cuda()
             hidden_b = hidden_b.cuda()
 
@@ -60,17 +50,22 @@ class LSTM(nn.Module):
 
         return (hidden_a, hidden_b)
 
-    def forward(self, X, X_lengths):
+    def forward(self, X):
         # reset the LSTM hidden state. Must be done before you run a new batch. Otherwise the LSTM will treat
         # a new batch as a continuation of a sequence
         self.hidden = self.init_hidden()
-
-        batch_size, seq_len, _ = X.size()
-
-        # ---------------------
+        print(X.size())
+        batch_size, seq_len, C, H, W = X.size()
+        c_in = X.view(batch_size * seq_len, C, H, W)
+        print(c_in.shape)
+        c_out = self.embedding(c_in)
+        print(c_out.shape)
+        r_in = c_out.view(batch_size, seq_len, -1)
+        print(r_in.shape)
+        # --------------------
         # 1. embed the input
         # Dim transformation: (batch_size, seq_len, 1) -> (batch_size, seq_len, embedding_dim)
-        X = self.embedding(X)
+        # X = self.embedding(X)
 
         # ---------------------
         # 2. Run through RNN
@@ -81,7 +76,8 @@ class LSTM(nn.Module):
         # X = torch.nn.utils.rnn.pack_padded_sequence(x, X_lengths, batch_first=True)
 
         # now run through LSTM
-        X, self.hidden = self.lstm(X, self.hidden)
+        r_out, self.hidden = self.lstm(r_in, self.hidden)
+        print(r_out.shape)
 
         # # undo the packing operation
         # X, _ = torch.nn.utils.rnn.pad_packed_sequence(X, batch_first=True)
@@ -91,22 +87,79 @@ class LSTM(nn.Module):
         # Dim transformation: (batch_size, seq_len, nb_lstm_units) -> (batch_size * seq_len, nb_lstm_units)
 
         # this one is a bit tricky as well. First we need to reshape the data so it goes into the linear layer
-        X = X.contiguous()
-        X = X.view(-1, X.shape[2])
+        # X = X.contiguous()
 
         # run through actual linear layer
-        X = self.hidden_to_tag(X)
+        print(r_out[:, -1, :])
+        tag_space= self.hidden_to_tag(r_out[:, -1, :])
 
         # ---------------------
         # 4. Create softmax activations bc we're doing classification
         # Dim transformation: (batch_size * seq_len, nb_lstm_units) -> (batch_size, seq_len, nb_tags)
-        X = F.log_softmax(X, dim=1)
+        tag_scores = F.log_softmax(tag_space, dim=1)
 
         # I like to reshape for mental sanity so we're back to (batch_size, seq_len, nb_tags)
-        X = X.view(batch_size, seq_len, self.nb_tags)
+        # X = X.view(batch_size, seq_len, self.nb_tags)
 
-        Y_hat = X
-        return Y_hat
+        # Y_hat = X
+        return tag_scores
 
 
+model = LSTM(1)
+if torch.cuda.is_available():
+    model.cuda()
+
+optimizer = optim.Adam(model.parameters(), lr=0.003)
+
+def load_dataset(batch_size):
+    X=np.load("./movo_data/images.npy")
+    y=np.load("./movo_data/labels.npy")
+
+    print(X.shape, y.shape)
+
+    X=torch.tensor(X)
+    y=torch.tensor(y)
+
+
+    dataset = TensorDataset(X.float(),y.float())
+
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size
+    )
+
+    return loader
+
+
+
+def train(epoch):
+    batch_size = 3
+    train_loader = load_dataset(batch_size)
+
+    model.train()
+    for batch_idx, (data, target) in enumerate(train_loader):
+
+        # data = np.expand_dims(data, axis=1)
+        data = torch.FloatTensor(data)
+        if torch.cuda.is_available():
+            data, target = data.cuda(), target.cuda()
+
+        # data, target = Variable(data), Variable(target)
+        optimizer.zero_grad()
+        output = model(data)
+
+        loss = F.nll_loss(output, target)
+        loss.backward()
+        optimizer.step()
+        if batch_idx % 5 == 0:
+            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+                epoch, batch_idx * len(data), len(train_loader.dataset),
+                       100. * batch_idx / len(train_loader), loss.data[0]))
+
+
+torch.manual_seed(1)
+num_epochs =5
+for epoch in range(1, num_epochs + 1):
+    train(epoch)
+    # test()
 

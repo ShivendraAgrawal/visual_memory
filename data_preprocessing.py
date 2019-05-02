@@ -3,6 +3,7 @@ import numpy as np
 from matplotlib.image import imread
 
 def parse_training_data(dir_path):
+    label_transform = {'i':0, 'j':1, 'l':2}
     image_list, label_list =  [], []
     single_path_image_list, single_path_label_list = [], []
     for file in sorted(os.listdir(dir_path), key=lambda x: int(x.split("_")[1])):
@@ -11,7 +12,7 @@ def parse_training_data(dir_path):
             file_path = os.path.join(dir_path, file)
             img = imread(file_path)
             single_path_image_list.append(img)
-            single_path_label_list.append(file.split("_")[2])
+            single_path_label_list.append(label_transform[file.split("_")[2]])
             if len(single_path_image_list)%10 == 0:
                 image_list.append(single_path_image_list.copy())
                 single_path_image_list = []
