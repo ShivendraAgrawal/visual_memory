@@ -2,13 +2,17 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn import functional as F
-from cnn_model import Net
+from cnn_model import CNN
+import torchvision.models as models
 import torch.optim as optim
 import numpy as np
 from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data.sampler import SubsetRandomSampler
+import matplotlib.pyplot as plt
+
 
 class LSTM(nn.Module):
-    def __init__(self, nb_layers, nb_lstm_units=100, embedding_dim=1024, batch_size=3):
+    def __init__(self, nb_layers, nb_lstm_units=100, embedding_dim=500, batch_size=5):
         super(LSTM, self).__init__()
         self.tags = {'forward':0, 'left':1, 'right':2}
 
@@ -23,7 +27,7 @@ class LSTM(nn.Module):
         # # when the model is bidirectional we double the output dimension
         # self.lstm
 
-        self.embedding = Net(self.embedding_dim)
+        self.embedding = CNN(self.embedding_dim)
         # design LSTM
         self.lstm = nn.LSTM(
             input_size=self.embedding_dim,
@@ -47,21 +51,22 @@ class LSTM(nn.Module):
 
         hidden_a = Variable(hidden_a)
         hidden_b = Variable(hidden_b)
-
+        # print(hidden_a.shape, hidden_b.shape)
         return (hidden_a, hidden_b)
 
     def forward(self, X):
         # reset the LSTM hidden state. Must be done before you run a new batch. Otherwise the LSTM will treat
         # a new batch as a continuation of a sequence
         self.hidden = self.init_hidden()
-        print(X.size())
-        batch_size, seq_len, C, H, W = X.size()
+        # print(X.size())
+        batch_size, seq_len, H, W , C= X.size()
         c_in = X.view(batch_size * seq_len, C, H, W)
-        print(c_in.shape)
+        # print(c_in.shape)
         c_out = self.embedding(c_in)
-        print(c_out.shape)
+
+        # print(c_out.shape)
         r_in = c_out.view(batch_size, seq_len, -1)
-        print(r_in.shape)
+        # print(r_in.shape)
         # --------------------
         # 1. embed the input
         # Dim transformation: (batch_size, seq_len, 1) -> (batch_size, seq_len, embedding_dim)
@@ -69,7 +74,7 @@ class LSTM(nn.Module):
 
         # ---------------------
         # 2. Run through RNN
-        # TRICK 2 ********************************
+        # TRICK 2 ************
         # Dim transformation: (batch_size, seq_len, embedding_dim) -> (batch_size, seq_len, nb_lstm_units)
 
         # pack_padded_sequence so that padded items in the sequence won't be shown to the LSTM
@@ -77,7 +82,7 @@ class LSTM(nn.Module):
 
         # now run through LSTM
         r_out, self.hidden = self.lstm(r_in, self.hidden)
-        print(r_out.shape)
+        # print(r_out.shape)
 
         # # undo the packing operation
         # X, _ = torch.nn.utils.rnn.pad_packed_sequence(X, batch_first=True)
@@ -90,14 +95,17 @@ class LSTM(nn.Module):
         # X = X.contiguous()
 
         # run through actual linear layer
-        print(r_out[:, -1, :])
-        tag_space= self.hidden_to_tag(r_out[:, -1, :])
-
+        # print(r_out[:, -1, :].shape)
+        r_out = r_out.contiguous().view(batch_size * seq_len,-1)
+        # print(r_out.shape)
+        # tag_space= self.hidden_to_tag(r_out[:, -1, :])
+        tag_space = self.hidden_to_tag(r_out)
         # ---------------------
         # 4. Create softmax activations bc we're doing classification
         # Dim transformation: (batch_size * seq_len, nb_lstm_units) -> (batch_size, seq_len, nb_tags)
         tag_scores = F.log_softmax(tag_space, dim=1)
-
+        # print(tag_scores.shape)
+        # tag_scores = tag_scores.view(batch_size, seq_len, -1)
         # I like to reshape for mental sanity so we're back to (batch_size, seq_len, nb_tags)
         # X = X.view(batch_size, seq_len, self.nb_tags)
 
@@ -105,61 +113,219 @@ class LSTM(nn.Module):
         return tag_scores
 
 
-model = LSTM(1)
-if torch.cuda.is_available():
-    model.cuda()
+def loss_plots(train_loss, valid_loss):
+    epochs = range(1, len(train_loss) + 1)
 
-optimizer = optim.Adam(model.parameters(), lr=0.003)
+    plt.plot(epochs, train_loss)
+    plt.plot(epochs, valid_loss)
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend(['training', 'validation'], loc='lower right')
 
-def load_dataset(batch_size):
-    X=np.load("./movo_data/images.npy")
-    y=np.load("./movo_data/labels.npy")
+    plt.savefig("loss_plots")
+
+def train(train_loader, valid_loader, batch_size, n_epochs):
+    # check if CUDA is available
+    train_on_gpu = torch.cuda.is_available()
+
+    model = LSTM(1, batch_size=batch_size)
+
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
+
+    print(model)
+
+    if train_on_gpu:
+        model.cuda()
+
+    valid_loss_min = np.Inf  # track change in validation loss
+
+    train_loss_list = []
+    valid_loss_list = []
+
+    for epoch in range(1, n_epochs + 1):
+
+        # keep track of training and validation loss
+        train_loss = 0.0
+        valid_loss = 0.0
+
+        ###################
+        # train the model #
+        ###################
+        model.train()
+        for data, target in train_loader:
+            # move tensors to GPU if CUDA is available
+            target = target.long()
+            data = torch.FloatTensor(data)
+            if train_on_gpu:
+                data, target = data.cuda(), target.cuda()
+            # clear the gradients of all optimized variables
+            optimizer.zero_grad()
+            # forward pass: compute predicted outputs by passing inputs to the model
+            output = model(data)
+
+            target = target.view(-1)
+            # calculate the batch loss
+            loss = F.nll_loss(output, target)
+            # backward pass: compute gradient of the loss with respect to model parameters
+            loss.backward()
+            # perform a single optimization step (parameter update)
+            optimizer.step()
+            # update training loss
+            train_loss += loss.item() * data.size(0)
+
+        ######################
+        # validate the model #
+        ######################
+        model.eval()
+        for data, target in valid_loader:
+            target = target.long()
+            data = torch.FloatTensor(data)
+            # move tensors to GPU if CUDA is available
+            if train_on_gpu:
+                data, target = data.cuda(), target.cuda()
+            # forward pass: compute predicted outputs by passing inputs to the model
+            output = model(data)
+            # calculate the batch loss
+            target = target.view(-1)
+            # calculate the batch loss
+            loss = F.nll_loss(output, target)
+            # update average validation loss
+            valid_loss += loss.item() * data.size(0)
+
+        # calculate average losses
+        train_loss = train_loss / len(train_loader.dataset)*10
+        valid_loss = valid_loss / len(valid_loader.dataset)*10
+
+        train_loss_list.append(train_loss)
+        valid_loss_list.append(valid_loss)
+
+        # print training/validation statistics
+        print('Epoch: {} \tTraining Loss: {:.6f} \tValidation Loss: {:.6f}'.format(
+            epoch, train_loss, valid_loss))
+
+        # save model if validation loss has decreased
+        if valid_loss <= valid_loss_min:
+            print('Validation loss decreased ({:.6f} --> {:.6f}).  Saving model ...'.format(
+                valid_loss_min,
+                valid_loss))
+            torch.save(model.state_dict(), 'end_to_end_net.pt')
+            valid_loss_min = valid_loss
+
+    loss_plots(train_loss_list, valid_loss_list)
+
+def save_results(PATH, loader, batch_size, seq_length):
+    train_on_gpu = torch.cuda.is_available()
+
+    criterion = nn.CrossEntropyLoss()
+
+    model = LSTM(1, batch_size=batch_size)
+
+    model.load_state_dict(torch.load(PATH))
+
+    model.eval()
+
+    if train_on_gpu:
+        model.cuda()
+
+
+    class_correct = [0., 0., 0.]
+    class_total = [0., 0., 0.]
+
+
+    for data, target in loader:
+        target = target.long()
+        print(target.shape)
+        data = torch.FloatTensor(data)
+        # move tensors to GPU if CUDA is available
+        if train_on_gpu:
+            data, target = data.cuda(), target.cuda()
+        # forward pass: compute predicted outputs by passing inputs to the model
+        output = model(data)
+        # calculate the batch loss
+        target = target.view(-1)
+        # calculate the batch loss
+        loss = F.nll_loss(output, target)
+
+        # convert output probabilities to predicted class
+        _, pred = torch.max(output, 1)
+        print("Pred target", pred, target)
+
+        # compare predictions to true label
+        correct_tensor = pred.eq(target.data.view_as(pred))
+        correct = np.squeeze(correct_tensor.numpy()) if not train_on_gpu else np.squeeze(correct_tensor.cpu().numpy())
+
+        for i in range(batch_size*seq_length):
+            label = target.data[i]
+            class_correct[label] += correct[i].item()
+            class_total[label] += 1
+
+            # print("predicted label: ",correct[i].item())
+            # print("correct label: ", label)
+
+    # for i in range(3):
+    #     print('Accuracy of {} : {} / {} = {:.4f} %'.format(i,
+    #                                                        class_correct[i], class_total[i],
+    #                                                        100 * class_correct[i] /
+    #                                                        class_total[i]))
+
+    print('\nAccuracy (Overall): %2d%%' % (
+            100. * np.sum(class_correct) / np.sum(class_total)))
+
+
+if __name__ == '__main__':
+
+    batch_size = 1
+    n_epochs = 100
+    validation_split = .2
+    testing_split = 0.2
+    shuffle_dataset = True
+    # random_seed = 42
+
+    X = np.load("./movo_data/images.npy")
+    y = np.load("./movo_data/labels.npy")
 
     print(X.shape, y.shape)
+    seq_length = X.shape[1]
+    print(seq_length)
 
-    X=torch.tensor(X)
-    y=torch.tensor(y)
+    X = torch.tensor(X)
+    y = torch.tensor(y)
 
+    dataset = TensorDataset(X.float(), y.float())
+    # Creating data indices for training and validation splits:
+    dataset_size = len(dataset)
+    indices = list(range(dataset_size))
 
-    dataset = TensorDataset(X.float(),y.float())
+    valid_split = int(np.floor(validation_split * dataset_size))
 
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size
-    )
+    if shuffle_dataset:
+        # np.random.seed(random_seed)
+        np.random.shuffle(indices)
 
-    return loader
+    train_indices, val_indices = indices[valid_split:], indices[:valid_split]
 
+    test_split = int(np.floor(testing_split * len(train_indices)))
 
+    train_indices, test_indices = train_indices[test_split:], train_indices[:test_split]
+    print(len(train_indices), len(val_indices), len(test_indices))
 
-def train(epoch):
-    batch_size = 3
-    train_loader = load_dataset(batch_size)
+    print(test_indices)
 
-    model.train()
-    for batch_idx, (data, target) in enumerate(train_loader):
+    # Creating PT data samplers and loaders:
+    train_sampler = SubsetRandomSampler(train_indices)
+    valid_sampler = SubsetRandomSampler(val_indices)
+    test_sampler = SubsetRandomSampler(test_indices)
 
-        # data = np.expand_dims(data, axis=1)
-        data = torch.FloatTensor(data)
-        if torch.cuda.is_available():
-            data, target = data.cuda(), target.cuda()
+    train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
+                                               sampler=train_sampler)
+    valid_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
+                                                    sampler=valid_sampler)
 
-        # data, target = Variable(data), Variable(target)
-        optimizer.zero_grad()
-        output = model(data)
+    test_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
+                                               sampler=test_sampler)
 
-        loss = F.nll_loss(output, target)
-        loss.backward()
-        optimizer.step()
-        if batch_idx % 5 == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                       100. * batch_idx / len(train_loader), loss.data[0]))
-
-
-torch.manual_seed(1)
-num_epochs =5
-for epoch in range(1, num_epochs + 1):
-    train(epoch)
-    # test()
-
+    train(train_loader, valid_loader, batch_size, n_epochs)
+    print("Valid")
+    save_results('end_to_end_net.pt', valid_loader, batch_size,seq_length)
+    print("test")
+    save_results('end_to_end_net.pt', test_loader, batch_size, seq_length)

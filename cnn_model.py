@@ -3,45 +3,31 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 # define the CNN architecture
-class Net(nn.Module):
-    def __init__(self, feature_length = 1024):
-        super(Net, self).__init__()
+class CNN(nn.Module):
+    def __init__(self, feature_length):
+        super(CNN, self).__init__()
         # input image size - 128*128*3
-        self.conv1 = nn.Conv2d(3, 16, 3, padding=1)
-        self.conv2 = nn.Conv2d(16, 32, 3, padding =1)
-        self.conv3 = nn.Conv2d(32, 64, 3, padding =1)
-        self.conv4 = nn.Conv2d(64, 128, 3, padding =1)
 
-        # max pooling layer
+        # # max pooling layer
         self.pool = nn.MaxPool2d(2, 2)
 
-        self.fc1 = nn.Linear(8192, 4096)
-
-        self.fc2 = nn.Linear(4096, feature_length)
-        # dropout layer (p=0.25)
-        self.dropout = nn.Dropout(0.25)
-
-
+        self.conv1 = nn.Conv2d(3, 10, kernel_size=5)
+        self.conv2 = nn.Conv2d(10, 20, kernel_size=5)
+        # self.conv2_drop = nn.Dropout2d()
+        self.fc1 = nn.Linear(7020, 1000)
+        self.fc2 = nn.Linear(1000, feature_length)
 
 
     def forward(self, x):
         # add sequence of convolutional and max pooling layers
+        x=self.pool(self.pool(self.pool(x)))
         x = self.pool(F.relu(self.conv1(x)))
-        print(x.shape)
+        # print(x.shape)
         x = self.pool(F.relu(self.conv2(x)))
-        print(x.shape)
-        x = self.pool(F.relu(self.conv3(x)))
-        print(x.shape)
-        x = self.pool(F.relu(self.conv4(x)))
-        print(x.shape)
-        x = x.view(-1, 8192)
+        # print(x.shape)
+        x = x.view(-1,7020 )
 
         path_abs_input = F.relu(self.fc1(x))
-        # add dropout layer
-        path_abs_input = self.dropout(path_abs_input)
-        # add 2nd hidden layer, with relu activation function
         path_abs_input = self.fc2(path_abs_input)
 
         return path_abs_input
-
-
