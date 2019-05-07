@@ -1,3 +1,7 @@
+# Ignore these
 *.npy
 *.png
 *.pt
+
+# But not these
+!loss_plots.png

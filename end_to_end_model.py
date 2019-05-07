@@ -275,7 +275,7 @@ def save_results(PATH, loader, batch_size, seq_length):
 if __name__ == '__main__':
 
     batch_size = 1
-    n_epochs = 100
+    n_epochs = 50
     validation_split = .2
     testing_split = 0.2
     shuffle_dataset = True
