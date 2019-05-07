@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 from torch.nn import functional as F
-from cnn_model import CNN
+from cnn_model_depth import CNN
 import torchvision.models as models
 import torch.optim as optim
 import numpy as np
@@ -59,12 +59,12 @@ class LSTM(nn.Module):
         # a new batch as a continuation of a sequence
         self.hidden = self.init_hidden()
         # print(X.size())
-        batch_size, seq_len, H, W , C= X.size()
-        c_in = X.view(batch_size * seq_len, C, H, W)
-        # print(c_in.shape)
+        batch_size, seq_len, H, W = X.size()
+        c_in = X.view(batch_size * seq_len, 1, H, W)
+        # print("c_in",c_in.shape)
         c_out = self.embedding(c_in)
 
-        # print(c_out.shape)
+        # print("c_out",c_out.shape)
         r_in = c_out.view(batch_size, seq_len, -1)
         # print(r_in.shape)
         # --------------------
@@ -193,8 +193,8 @@ def train(train_loader, valid_loader, batch_size, n_epochs):
             valid_loss += loss.item() * data.size(0)
 
         # calculate average losses
-        train_loss = train_loss / len(train_loader.dataset)*10
-        valid_loss = valid_loss / len(valid_loader.dataset)*10
+        train_loss = train_loss / len(train_loader.dataset)*seq_length
+        valid_loss = valid_loss / len(valid_loader.dataset)*seq_length
 
         train_loss_list.append(train_loss)
         valid_loss_list.append(valid_loss)
@@ -208,7 +208,7 @@ def train(train_loader, valid_loader, batch_size, n_epochs):
             print('Validation loss decreased ({:.6f} --> {:.6f}).  Saving model ...'.format(
                 valid_loss_min,
                 valid_loss))
-            torch.save(model.state_dict(), 'end_to_end_net.pt')
+            torch.save(model.state_dict(), 'end_to_end_depth_net.pt')
             valid_loss_min = valid_loss
 
     loss_plots(train_loss_list, valid_loss_list)
@@ -275,18 +275,21 @@ def save_results(PATH, loader, batch_size, seq_length):
 if __name__ == '__main__':
 
     batch_size = 1
-    n_epochs = 100
+    n_epochs = 50
     validation_split = .2
     testing_split = 0.2
     shuffle_dataset = True
     # random_seed = 42
 
-    X = np.load("./movo_data/images_v2.npy")
+    X = np.load("./movo_data/depths_v2.npy")
     y = np.load("./movo_data/labels_v2.npy")
 
     print(X.shape, y.shape)
+
     seq_length = X.shape[1]
     print(seq_length)
+
+    X = X.astype(dtype='float32')
 
     X = torch.tensor(X)
     y = torch.tensor(y)
@@ -326,6 +329,6 @@ if __name__ == '__main__':
 
     train(train_loader, valid_loader, batch_size, n_epochs)
     print("Valid")
-    save_results('end_to_end_net.pt', valid_loader, batch_size,seq_length)
+    save_results('end_to_end_depth_net.pt', valid_loader, batch_size,seq_length)
     print("test")
-    save_results('end_to_end_net.pt', test_loader, batch_size, seq_length)
+    save_results('end_to_end_depth_net.pt', test_loader, batch_size, seq_length)
